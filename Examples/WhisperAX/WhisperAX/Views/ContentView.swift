@@ -81,6 +81,7 @@ struct ContentView: View {
     @State private var bufferSeconds: Double = 0
     @State private var confirmedSegments: [TranscriptionSegment] = []
     @State private var unconfirmedSegments: [TranscriptionSegment] = []
+    @State private var searchText: String = ""
 
     // MARK: Eager mode properties
 
@@ -96,12 +97,21 @@ struct ContentView: View {
 
     // MARK: UI properties
 
+    @State private var showLanguageSelector: Bool = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showComputeUnits: Bool = true
     @State private var showAdvancedOptions: Bool = false
     @State private var transcriptionTask: Task<Void, Never>?
     @State private var selectedCategoryId: MenuItem.ID?
     @State private var transcribeTask: Task<Void, Never>?
+    
+    private var filteredLanguages: [String] {
+        availableLanguages.filter { language in
+            language
+                .lowercased()
+                .contains(searchText.lowercased()) || searchText.isEmpty
+        }
+    }
 
     struct MenuItem: Identifiable, Hashable {
         var id = UUID()
@@ -163,7 +173,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            VStack(alignment: .leading) {
+            VStack(alignment: .center) {
                 modelSelectorView
                     .padding(.vertical)
                 computeUnitsView
@@ -176,13 +186,16 @@ struct ContentView: View {
                         Text(item.name)
                             .font(.system(.title3))
                             .bold()
+                        Spacer()
+                        Image(systemName: "chevron.right")
                     }
+                    .foregroundColor(modelState != .loaded ? .secondary : .blue)
                 }
                 .onChange(of: selectedCategoryId) {
                     selectedTab = menu.first(where: { $0.id == selectedCategoryId })?.name ?? "Transcribe"
                 }
                 .disabled(modelState != .loaded)
-                .foregroundColor(modelState != .loaded ? .secondary : .primary)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
 
                 Spacer()
 
@@ -208,46 +221,7 @@ struct ContentView: View {
             .padding(.horizontal)
             Spacer()
         } detail: {
-            VStack {
-                #if os(iOS)
-                modelSelectorView
-                    .padding()
-                transcriptionView
-                #elseif os(macOS)
-                VStack(alignment: .leading) {
-                    transcriptionView
-                }
-                .padding()
-                #endif
-                controlsView
-            }
-            .toolbar(content: {
-                ToolbarItem {
-                    Button {
-                        if !enableEagerDecoding {
-                            let fullTranscript = formatSegments(confirmedSegments + unconfirmedSegments, withTimestamps: enableTimestamps).joined(separator: "\n")
-                            #if os(iOS)
-                            UIPasteboard.general.string = fullTranscript
-                            #elseif os(macOS)
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(fullTranscript, forType: .string)
-                            #endif
-                        } else {
-                            #if os(iOS)
-                            UIPasteboard.general.string = confirmedText + hypothesisText
-                            #elseif os(macOS)
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(confirmedText + hypothesisText, forType: .string)
-                            #endif
-                        }
-                    } label: {
-                        Label("Copy Text", systemImage: "doc.on.doc")
-                    }
-                    .keyboardShortcut("c", modifiers: .command)
-                    .foregroundColor(.primary)
-                    .frame(minWidth: 0, maxWidth: .infinity)
-                }
-            })
+            detailTab
         }
         .onAppear {
             #if os(macOS)
@@ -258,6 +232,49 @@ struct ContentView: View {
             }
             #endif
             fetchModels()
+        }
+    }
+    
+    var detailTab: some View {
+        VStack {
+            #if os(iOS)
+            modelSelectorView
+                .padding()
+            transcriptionView
+            #elseif os(macOS)
+            VStack(alignment: .leading) {
+                transcriptionView
+            }
+            .padding()
+            #endif
+            controlsView
+        }
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    if !enableEagerDecoding {
+                        let fullTranscript = formatSegments(confirmedSegments + unconfirmedSegments, withTimestamps: enableTimestamps).joined(separator: "\n")
+                        #if os(iOS)
+                        UIPasteboard.general.string = fullTranscript
+                        #elseif os(macOS)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(fullTranscript, forType: .string)
+                        #endif
+                    } else {
+                        #if os(iOS)
+                        UIPasteboard.general.string = confirmedText + hypothesisText
+                        #elseif os(macOS)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(confirmedText + hypothesisText, forType: .string)
+                        #endif
+                    }
+                } label: {
+                    Label("Copy Text", systemImage: "doc.on.doc")
+                }
+                .keyboardShortcut("c", modifiers: .command)
+                .foregroundColor(.primary)
+                .frame(minWidth: 0, maxWidth: .infinity)
+            }
         }
     }
 
@@ -546,6 +563,7 @@ struct ContentView: View {
     var controlsView: some View {
         VStack {
             basicSettingsView
+                .disabled(isTranscribing || isRecording)
 
             if let selectedCategoryId, let item = menu.first(where: { $0.id == selectedCategoryId }) {
                 switch item.name {
@@ -571,7 +589,7 @@ struct ContentView: View {
                                     Label("Settings", systemImage: "slider.horizontal.3")
                                 }
                                 .buttonStyle(.borderless)
-                            }
+                            }.disabled(isTranscribing)
 
                             HStack {
                                 let color: Color = modelState != .loaded ? .gray : .red
@@ -672,7 +690,7 @@ struct ContentView: View {
                                     .frame(minWidth: 0, maxWidth: .infinity)
                                     .buttonStyle(.borderless)
                                 }
-                            }
+                            }.disabled(isRecording)
 
                             ZStack {
                                 Button {
@@ -722,7 +740,35 @@ struct ContentView: View {
                 .presentationContentInteraction(.scrolls)
         })
     }
-
+    
+    var languageSelector: some View {
+        List {
+            Section {
+                TextField("Search...", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .listRowBackground(Color.clear)
+            }
+            Section {
+                ForEach(filteredLanguages, id: \.self) { language in
+                    Button {
+                        selectedLanguage = language.description
+                    } label: {
+                        HStack {
+                            Text(language.description)
+                            if language == selectedLanguage {
+                                Spacer()
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+    
     var basicSettingsView: some View {
         VStack {
             HStack {
@@ -735,20 +781,19 @@ struct ContentView: View {
                 .disabled(!(whisperKit?.modelVariant.isMultilingual ?? false))
             }
             .padding(.horizontal)
-
-            LabeledContent {
-                Picker("", selection: $selectedLanguage) {
-                    ForEach(availableLanguages, id: \.self) { language in
-                        Text(language.description).tag(language.description)
-                    }
-                }
-                .disabled(!(whisperKit?.modelVariant.isMultilingual ?? false))
+            
+            
+            Button {
+                showLanguageSelector = true
             } label: {
-                Label("Source Language", systemImage: "globe")
+                Label("Language: \(selectedLanguage.description)", systemImage: "globe")
             }
             .padding(.horizontal)
             .padding(.top)
-
+            .sheet(isPresented: $showLanguageSelector) {
+                languageSelector
+            }
+            
             HStack {
                 Text(effectiveRealTimeFactor.formatted(.number.precision(.fractionLength(3))) + " RTF")
                     .font(.system(.body))
